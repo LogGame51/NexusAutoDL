@@ -2,8 +2,6 @@
 Button detection using SIFT feature matching.
 """
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Optional
 
@@ -65,6 +63,7 @@ class ButtonDetector:
             "click": "ClickHereButton.png",
             "understood": "UnderstoodButton.png",
             "staging": "StagingButton.png",
+            "vortex_continue": "vortex_continue.png",
         }
         optional_assets: dict[str, str] = {
             "vortex_new": "VortexDownloadButtonNew.png",
@@ -116,6 +115,7 @@ class ButtonDetector:
         self.assets.click_desc = compute_desc(self.assets.click_img)
         self.assets.understood_desc = compute_desc(self.assets.understood_img)
         self.assets.staging_desc = compute_desc(self.assets.staging_img)
+        self.assets.vortex_continue_desc = compute_desc(self.assets.vortex_continue_img)
 
         logger.info("Computed descriptors for all assets")
 
@@ -269,6 +269,9 @@ class ButtonDetector:
             ),
             ButtonType.STAGING: self._single_candidate(
                 self.assets.staging_img, self.assets.staging_desc
+            ),
+            ButtonType.VORTEX_CONTINUE: self._single_candidate(
+                self.assets.vortex_continue_img, self.assets.vortex_continue_desc
             ),
         }
 

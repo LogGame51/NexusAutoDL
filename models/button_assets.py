@@ -18,6 +18,7 @@ class ButtonAssets(BaseModel):
     click_img: NDArray[uint8]
     understood_img: NDArray[uint8]
     staging_img: NDArray[uint8]
+    vortex_continue_img: NDArray[uint8]
 
     vortex_desc: Optional[NDArray[float32]] = None
     vortex_new_desc: Optional[NDArray[float32]] = None
@@ -27,6 +28,7 @@ class ButtonAssets(BaseModel):
     click_desc: Optional[NDArray[float32]] = None
     understood_desc: Optional[NDArray[float32]] = None
     staging_desc: Optional[NDArray[float32]] = None
+    vortex_continue_desc: Optional[NDArray[float32]] = None
 
     class Config:
         arbitrary_types_allowed = True
