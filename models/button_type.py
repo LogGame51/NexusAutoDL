@@ -12,3 +12,4 @@ class ButtonType(str, Enum):
     CLICK = "click"
     UNDERSTOOD = "understood"
     STAGING = "staging"
+    VORTEX_CONTINUE = "vortex_continue"

@@ -26,11 +26,11 @@ from services.debug_recorder import DebugRecorder
 from services.screen_capture import ScreenCapture
 from services.window_manager import WindowManager
 from utils.logger import get_logger
+from utils.i18n import _
 
 logger = get_logger(__name__)
 
-VORTEX_WEB_RETRY_LIMIT = 3  # Attempts before falling back to Vortex search
-
+VORTEX_WEB_RETRY_LIMIT = 10  # Attempts before falling back to Vortex search
 
 class Scanner:
     """Orchestrates the scanning and clicking process."""
@@ -65,6 +65,7 @@ class Scanner:
 
         # Initialize status
         self.status = ScanStatus(current_action="Initialized")
+        self.last_web_click: Optional[tuple[int, int]] = None
 
         # Setup windows if needed
         self._setup_windows()
@@ -117,6 +118,8 @@ class Scanner:
 
         self.click_controller.click(mon_x, mon_y)
         self.status.clicks_count += 1
+        self.last_click_time = time.time()
+        self.last_focus_time = time.time()
         self.status.detections.append(detection)
         self._update_status()
 
@@ -159,29 +162,33 @@ class Scanner:
         fac: float = 5 + (5 - vortex_bbox.x1 / 512)
         padded_bbox: BoundingBox = bbox.pad(1 / fac)
 
-        # Check for popup dialogs first (legacy workflow only)
+        # Check for popup dialogs (both legacy and error popups)
+        popup_buttons: list[tuple[ButtonType, str]] = [
+            (ButtonType.VORTEX_CONTINUE, _("click_continue")),
+        ]
         if self.config.legacy:
-            popup_buttons: list[tuple[ButtonType, str]] = [
+            popup_buttons.extend([
                 (ButtonType.UNDERSTOOD, "Clicking 'Understood' button"),
                 (ButtonType.STAGING, "Clicking 'Staging' button"),
-            ]
-            for button_type, action in popup_buttons:
-                detection: Optional[DetectionResult] = self.button_detector.detect(
-                    img,
-                    button_type,
-                    min_matches=6,
-                    ratio=self.config.ratio_threshold,
+            ])
+            
+        for button_type, action in popup_buttons:
+            detection: Optional[DetectionResult] = self.button_detector.detect(
+                img,
+                button_type,
+                min_matches=6,
+                ratio=self.config.ratio_threshold,
+            )
+            if detection:
+                self.status.state = ScanState.HANDLING_POPUP
+                self.status.current_action = action
+                self._update_status()
+                self.debug_recorder.record(
+                    img, detection, iteration, f"popup_{button_type.value}"
                 )
-                if detection:
-                    self.status.state = ScanState.HANDLING_POPUP
-                    self.status.current_action = action
-                    self._update_status()
-                    self.debug_recorder.record(
-                        img, detection, iteration, f"popup_{button_type.value}"
-                    )
-                    self._click_detection(detection)
-                    time.sleep(self.config.retry_delay)
-                    return False
+                self._click_detection(detection)
+                time.sleep(self.config.retry_delay)
+                return False
 
         # Detect Vortex download button
         vortex_detection: Optional[DetectionResult] = self.button_detector.detect(
@@ -193,15 +200,16 @@ class Scanner:
         )
 
         if vortex_detection:
-            self.status.current_action = "Clicking Vortex download button"
+            self.status.current_action = _("click_vortex")
             self._update_status()
             self.debug_recorder.record(
                 img, vortex_detection, iteration, "vortex_download"
             )
             self._click_detection(vortex_detection)
+            time.sleep(1.5)
             return True
 
-        self.status.current_action = "Searching for Vortex button..."
+        self.status.current_action = _("wait_vortex")
         self._update_status()
         return False
 
@@ -230,16 +238,20 @@ class Scanner:
             detection: Optional[DetectionResult] = self.button_detector.detect(
                 img,
                 button_type,
-                min_matches=6,
+                min_matches=10,  # Lowered for web button to handle background changes (e.g. warning banners)
                 ratio=self.config.ratio_threshold,
             )
 
             if detection:
-                self.status.current_action = f"Clicking {label}"
+                self.status.current_action = _("click_web", label)
                 self._update_status()
                 self.debug_recorder.record(
                     img, detection, iteration, f"web_{button_type.value}"
                 )
+                
+                mon_x, mon_y = self.screen_capture.img_coords_to_monitor_coords(detection.x, detection.y)
+                self.last_web_click = (mon_x, mon_y)
+                
                 self._click_detection(detection)
                 self.status.web_retry_count = 0
                 return True, False
@@ -268,11 +280,7 @@ class Scanner:
             return False, False
 
         self.status.web_retry_count += 1
-        target_text = " or ".join(label for _, label in targets)
-        self.status.current_action = (
-            f"Searching for {target_text}... "
-            f"(attempt {self.status.web_retry_count}/{retry_limit})"
-        )
+        self.status.current_action = _("wait_web")
         self._update_status()
         return False, False
 
@@ -328,9 +336,46 @@ class Scanner:
         vortex_found: bool = False
         web_clicked: bool = False
         iteration: int = 0
+        self.last_click_time = time.time()
+        self.last_focus_time = time.time()
 
         try:
             while True:
+                # 1. Защита от долгого простоя (1 час = 3600 сек)
+                if time.time() - self.last_click_time > 3600:
+                    logger.error("Прошел 1 час без кликов. Завершаем работу.")
+                    import ctypes
+                    import sys
+                    from datetime import datetime
+                    
+                    time_str = datetime.now().strftime("%H:%M:%S")
+                    msg = _("1h_timeout", time_str)
+                    ctypes.windll.user32.MessageBoxW(0, msg, _("stop_title"), 0)
+                    sys.exit(0)
+
+                # 2. Периодический фокус Вортекса (каждые 5 минут = 300 сек)
+                if time.time() - self.last_focus_time > 300:
+                    logger.info("Прошло 5 минут без активности. Фокусируем Vortex для страховки...")
+                    self.status.current_action = _("stall_vortex")
+                    self._update_status()
+                    try:
+                        import win32gui
+                        handles = []
+                        def enum_callback(hwnd, _):
+                            if win32gui.IsWindowVisible(hwnd):
+                                title = win32gui.GetWindowText(hwnd).lower()
+                                if "vortex" in title:
+                                    handles.append(hwnd)
+                            return True
+                        win32gui.EnumWindows(enum_callback, None)
+                        for hwnd in handles:
+                            win32gui.SetForegroundWindow(hwnd)
+                            break
+                    except Exception:
+                        pass
+                    
+                    self.last_focus_time = time.time()
+                    
                 if max_iterations and iteration >= max_iterations:
                     break
                 iteration += 1
@@ -350,6 +395,24 @@ class Scanner:
                     self.status.state = ScanState.WEB_CLICKED
                     dialog_complete = self._handle_click_dialog_state(img, iteration)
                     if dialog_complete:
+                        logger.info("Mod download initiated, waiting 10 seconds for Vortex to process...")
+                        
+                        for i in range(10, 0, -1):
+                            self.status.timer_countdown = i
+                            self.status.current_action = _("downloading", i)
+                            self._update_status()
+                            time.sleep(1)
+                            
+                        self.status.timer_countdown = 0
+                        self.status.current_action = _("close_tab")
+                        self._update_status()
+                        
+                        logger.info("Focusing browser and sending Ctrl+W to close tab...")
+                        if getattr(self, 'last_web_click', None):
+                            self.click_controller.click(self.last_web_click[0], self.last_web_click[1])
+                            time.sleep(0.5)
+                        self.click_controller.send_ctrl_w()
+                        
                         # Reset for next mod
                         vortex_found = False
                         web_clicked = False

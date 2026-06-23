@@ -23,9 +23,11 @@ class DebugRecorder:
 
     def __init__(self, output_dir: Path | None) -> None:
         self.output_dir: Path | None = output_dir
+        self.MAX_FRAMES = 100
         if self.output_dir:
             self.output_dir.mkdir(parents=True, exist_ok=True)
-            logger.info(f"Debug frames will be saved to {self.output_dir}")
+            self._cleanup_old_frames()
+            logger.info(f"Debug frames will be saved to {self.output_dir} (max {self.MAX_FRAMES})")
 
     def record(
         self,
@@ -42,11 +44,26 @@ class DebugRecorder:
         self._draw_detection_box(annotated, detection, label)
         filename: str = f"frame_{iteration:06d}_{label}.png"
         output_path: Path = self.output_dir / filename
-        cv2.imwrite(
-            str(output_path),
-            cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR),
-        )
-        logger.debug(f"Wrote debug frame to {output_path}")
+        import numpy as np
+        success, encoded = cv2.imencode('.png', cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR))
+        if success:
+            encoded.tofile(str(output_path))
+            logger.debug(f"Wrote debug frame to {output_path}")
+            self._cleanup_old_frames()
+        else:
+            logger.error("Failed to encode debug frame")
+
+    def _cleanup_old_frames(self) -> None:
+        """Keep only the latest MAX_FRAMES in the output directory."""
+        if not self.output_dir:
+            return
+        frames = sorted(self.output_dir.glob("frame_*.png"), key=lambda p: p.stat().st_mtime)
+        if len(frames) > self.MAX_FRAMES:
+            for old_frame in frames[:-self.MAX_FRAMES]:
+                try:
+                    old_frame.unlink()
+                except OSError:
+                    pass
 
     def _draw_detection_box(
         self,
