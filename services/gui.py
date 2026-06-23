@@ -87,7 +87,6 @@ class OverlayGUI:
 
     def kill_bot(self):
         """Instantly kills the python process."""
-        import sys
         print(_("stopped_by_user"))
         os._exit(0)
         

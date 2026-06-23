@@ -44,7 +44,7 @@ class DebugRecorder:
         self._draw_detection_box(annotated, detection, label)
         filename: str = f"frame_{iteration:06d}_{label}.png"
         output_path: Path = self.output_dir / filename
-        import numpy as np
+        
         success, encoded = cv2.imencode('.png', cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR))
         if success:
             encoded.tofile(str(output_path))
